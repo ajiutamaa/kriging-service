@@ -1,10 +1,26 @@
 import scala.annotation.tailrec
-import scala.collection.mutable.HashMap
 import scala.collection.mutable.ArrayBuffer
 import scala.io.Source
 
 /**
- * Created by lenovo on 8/14/2015.
+ * Created by pxajie on 8/14/2015.
+ * In short:
+ * Read data file
+ * Map to appropriate format
+ * Build a distance matrix from spatial data
+ * Define list of lags
+ * Compute lagged semivariance using known function
+ *  Semivariance on each lag is computed
+ *  Store it as a tuple of two list (lags, semivariogram)
+ * Estimate the real covariance function
+ *  compute the lag-zero covariance that is global covariance
+ *  find the optimum parameters for spherical function
+ *    sill -> lag-zero covariance
+ *    range -> lag distance at which semivariogram reaches sill value
+ *    searching performed with applying all range candidates into spherical function
+ *    find the range at which the mse is the lowest
+ *  covariance function can be retrieved by substracting semivariance from lag-zero cov
+ *    covfct(h) = cov0 - sv(h)
  */
 object Kriging {
   def main(args: Array[String]) {
@@ -38,9 +54,7 @@ object Kriging {
     }
 
     val semivariogram = Tuple2(lags, laggedSemivariance)
-
-    val dataVariance = variance(rows.map{x => x(3)}.toList)
-    getCovFunction(rows.map{x => x(3)}.toList, semivariogram, bandwidth)
+    val covFct = getCovFunction(rows.map{x => x(3)}.toList, semivariogram, bandwidth)
   }
 
   // calculate distance matrix on spatial data
@@ -91,7 +105,9 @@ object Kriging {
       val mse: Array[Double] = Array.fill(meshSize){0}
       for (i <- 0 until spacedList.length) {
         mse(i) = {
+          // make sure the return type is list of double
           val errors = spherical(semivariogram._1, spacedList(i), cov0)
+            .asInstanceOf[List[Double]]
             .zip(semivariogram._2)
             .map { yResultTuple =>
               val y = yResultTuple._2
@@ -103,10 +119,16 @@ object Kriging {
       }
       spacedList( mse.zipWithIndex.min._2 )
     }
-    println(param)
+    // return a covariance function
+    (lags: List[Int]) => {
+      spherical(lags, param, cov0).asInstanceOf[List[Double]].map{ result =>
+        cov0 - result
+      }
+    }
   }
 
-  def spherical (lags: List[Int], examinedRange: Double, sill: Double): List[Double] = {
+  // spherical function could accept list of lags or single lag
+  def spherical (h: Any, examinedRange: Double, sill: Double) = {
     def computeSpherical (lag: Int): Double = {
       if (lag <= examinedRange) {
         return sill * ( 1.5 * (lag/examinedRange) - 0.5 * Math.pow( (lag/examinedRange), 3 ) )
@@ -114,9 +136,11 @@ object Kriging {
         return sill
       }
     }
-    // compute spherical function for each lags
-    return lags.map{lag =>
-      computeSpherical(lag)
+    h match {
+      // compute spherical function for each lags
+      case lags: List[Int] => lags.map { lag => computeSpherical(lag) }
+      // compute spherical function for particular lag
+      case lag: Int => computeSpherical(lag)
     }
   }
 }
