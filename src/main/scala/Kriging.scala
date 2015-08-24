@@ -13,6 +13,7 @@ import scala.io.Source
  *  Semivariance on each lag is computed
  *  Store it as a tuple of two list (lags, semivariogram)
  * Estimate the real covariance function
+ *  refer to this paper (...) to see the relationship between semivariogram and covariance funct
  *  compute the lag-zero covariance that is global covariance
  *  find the optimum parameters for spherical function
  *    sill -> lag-zero covariance
@@ -35,7 +36,7 @@ object Kriging {
     val bandwidth = 500
     val distMat: Array[Array[Double]] = distMatrix(rows.map(x => new Tuple2(x(0), x(1))).toArray)
 
-    val lags = 0.until(10500, bandwidth).toList
+    val lags = 0.0.until(10500, bandwidth).toList
 
     // TODO refactor into functional form
     // calculate semivariance on each lag
@@ -55,6 +56,7 @@ object Kriging {
 
     val semivariogram = Tuple2(lags, laggedSemivariance)
     val covFct = getCovFunction(rows.map{x => x(3)}.toList, semivariogram, bandwidth)
+    krige(rows.toArray, covFct, lags, bandwidth, (1170.0, 1164.0), 16)
   }
 
   // calculate distance matrix on spatial data
@@ -74,22 +76,51 @@ object Kriging {
     val mean = vals.sum / vals.length
     @tailrec
     def varTail(accu: Double, current: List[Double]): Double = {
-      if (current.isEmpty) {
-        return accu
-      } else {
-        return varTail(accu+Math.pow(current.head-mean, 2), current.tail)
-      }
+      if (current.isEmpty) return accu
+      else return varTail(accu+Math.pow(current.head-mean, 2), current.tail)
     }
     return (1.0 / vals.length) * varTail(0, vals)
   }
 
-  def covariance (vals: List[Double], lag: Int, semivariogram: Tuple2[List[Int], List[Double]], bw: Int): Double = {
+  def covariance (vals: List[Double], lag: Double, semivariogram: Tuple2[List[Double], List[Double]], bw: Int): Double = {
     val cov0 = variance(vals)
-    return if (lag == 0) cov0 else cov0 - semivariogram._2(lag / bw)
+    return if (lag == 0) cov0 else cov0 - semivariogram._2((lag / bw).toInt)
+  }
+
+  // TODO kriging steps:
+  // determine corner points
+  // compute distance between each unknown points to all known points
+  // add distance vector to the data matrix as new column
+  // sort and take first N rows
+  // apply cov function to distance vector
+  // k as the resulting matrix
+  // compute distance matrix
+  // reshape distance matrix into vector
+  // apply cov function to distance vector
+  // reshape it back into matrix form -> K
+  // compute weights:
+  //  weights = inverse(K) * k
+  // compute residuals vector
+  // value estimation = dot product ( transpose ( weights ), residuals ) + mu
+
+  //use: flatten, grouped
+  def krige( dataMatrix: Array[Array[Double]], covfct: List[Double] => List[Double],
+             lags: List[Double], bandwith: Int, u: Tuple2[Double, Double], N: Int) = {
+    val distanceList = dataMatrix.map{ x =>
+      Math.sqrt( Math.pow( x(0)-u._1, 2 ) + Math.pow( x(1)-u._2, 2 ) )
+    }.toList
+    val nearestDataMatrix = distanceList.zipWithIndex.sorted.toList.map {x =>
+      // each row contains x, y, spatial value, distance to u
+      Array(dataMatrix(x._2)(0), dataMatrix(x._2)(1), dataMatrix(x._2)(2), x._1)
+    }.slice(0, N).toArray
+    val k = {
+      covfct( nearestDataMatrix.map { x => x(3) }.toList )
+    }
+    println(k.toString)
   }
 
   // TODO spherical is the default model for the time being
-  def getCovFunction (vals: List[Double], semivariogram: Tuple2[List[Int], List[Double]], bandwidth: Int) = {
+  def getCovFunction (vals: List[Double], semivariogram: Tuple2[List[Double], List[Double]], bandwidth: Int) = {
     // calculate the sill
     val cov0 = covariance(vals, semivariogram._1(0), semivariogram, bandwidth)
     // calculate optimal parameters (practical range)
@@ -120,7 +151,7 @@ object Kriging {
       spacedList( mse.zipWithIndex.min._2 )
     }
     // return a covariance function
-    (lags: List[Int]) => {
+    (lags: List[Double]) => {
       spherical(lags, param, cov0).asInstanceOf[List[Double]].map{ result =>
         cov0 - result
       }
@@ -129,7 +160,7 @@ object Kriging {
 
   // spherical function could accept list of lags or single lag
   def spherical (h: Any, examinedRange: Double, sill: Double) = {
-    def computeSpherical (lag: Int): Double = {
+    def computeSpherical (lag: Double): Double = {
       if (lag <= examinedRange) {
         return sill * ( 1.5 * (lag/examinedRange) - 0.5 * Math.pow( (lag/examinedRange), 3 ) )
       } else {
@@ -138,7 +169,7 @@ object Kriging {
     }
     h match {
       // compute spherical function for each lags
-      case lags: List[Int] => lags.map { lag => computeSpherical(lag) }
+      case lags: List[Double] => lags.map { lag => computeSpherical(lag) }
       // compute spherical function for particular lag
       case lag: Int => computeSpherical(lag)
     }
