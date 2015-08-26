@@ -2,6 +2,7 @@ import scala.annotation.tailrec
 import scala.collection.mutable.ArrayBuffer
 import scala.io.Source
 
+import breeze.linalg._
 /**
  * Created by pxajie on 8/14/2015.
  * In short:
@@ -25,6 +26,8 @@ import scala.io.Source
  */
 object Kriging {
   def main(args: Array[String]) {
+    val t1 = System.currentTimeMillis()
+
     val filePath = "data/ZoneA.dat"
 
     //create a matrix
@@ -56,7 +59,15 @@ object Kriging {
 
     val semivariogram = Tuple2(lags, laggedSemivariance)
     val covFct = getCovFunction(rows.map{x => x(3)}.toList, semivariogram, bandwidth)
-    krige(rows.toArray, covFct, lags, bandwidth, (1170.0, 1164.0), 16)
+
+    val xs = linspace(0, rows.map(x => x(0)).max, 101)
+    val ys = linspace(0, rows.map(x => x(1)).max, 81)
+
+    val interpolated = ys.map { y =>
+      xs.map { x =>
+        krige(rows.toArray, covFct, lags, bandwidth, (x, y), 16)
+      }
+    }
   }
 
   // calculate distance matrix on spatial data
@@ -102,8 +113,6 @@ object Kriging {
   //  weights = inverse(K) * k
   // compute residuals vector
   // value estimation = dot product ( transpose ( weights ), residuals ) + mu
-
-  //use: flatten, grouped
   def krige( dataMatrix: Array[Array[Double]], covfct: List[Double] => List[Double],
              lags: List[Double], bandwith: Int, u: Tuple2[Double, Double], N: Int) = {
     val distanceList = dataMatrix.map{ x =>
@@ -111,12 +120,26 @@ object Kriging {
     }.toList
     val nearestDataMatrix = distanceList.zipWithIndex.sorted.toList.map {x =>
       // each row contains x, y, spatial value, distance to u
-      Array(dataMatrix(x._2)(0), dataMatrix(x._2)(1), dataMatrix(x._2)(2), x._1)
+      Array(dataMatrix(x._2)(0), dataMatrix(x._2)(1), dataMatrix(x._2)(3), x._1)
     }.slice(0, N).toArray
     val k = {
-      covfct( nearestDataMatrix.map { x => x(3) }.toList )
+      val covResults = covfct( nearestDataMatrix.map { x => x(3) }.toList )
+      new DenseMatrix[Double](N, 1, covResults.toArray)
     }
-    println(k.toString)
+
+    val K = {
+      val distMatArr = distMatrix( nearestDataMatrix.map { x => (x(0), x(1))} )
+        .map { row => covfct (row.toList) }
+      new DenseMatrix[Double](N, N, distMatArr.map {x => x.toArray}.flatten )
+    }
+
+    val weights: DenseMatrix[Double] = inv(K) * k
+
+    val vals = dataMatrix.map { x => x(3) }
+    val spatialMean = vals.sum / vals.length
+
+    val residuals = new DenseVector[Double](nearestDataMatrix.map { x => x(2) }) - spatialMean
+    weights.t.toDenseVector.dot(residuals).asInstanceOf[Double] + spatialMean
   }
 
   // TODO spherical is the default model for the time being
